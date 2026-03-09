@@ -109,10 +109,13 @@ export class FloatingTextFx {
     const baseX = request.x + (stackIndex % 2 === 0 ? -1 : 1) * stackIndex * 7;
     const baseY = request.y - stackIndex * stackGap;
 
+    const fontSize = `${Math.round(style.sizePx)}px`;
+    const fontFamily = '"Avenir Next", "SF Pro Display", "Segoe UI", sans-serif';
+
     const text = this.scene.add
       .text(baseX, baseY, request.text, {
-        fontFamily: '"Avenir Next", "SF Pro Display", "Segoe UI", sans-serif',
-        fontSize: `${Math.round(style.sizePx)}px`,
+        fontFamily,
+        fontSize,
         fontStyle: "800",
         color: style.color,
         align: "center",
@@ -125,18 +128,74 @@ export class FloatingTextFx {
     text.setStroke(style.strokeColor, style.strokeThickness);
     text.setShadow(0, 2, style.shadowColor, 8, true, true);
 
-    const peakScale = style.peakScale + (request.intensity ?? 0) * 0.03;
-    const driftY = style.driftYPx + (request.intensity ?? 0) * 4;
+    let glowText: Phaser.GameObjects.Text | null = null;
+    if (tone === "critical" || request.channel === "top") {
+      glowText = this.scene.add
+        .text(baseX, baseY, request.text, {
+          fontFamily,
+          fontSize,
+          fontStyle: "800",
+          color: style.color,
+          align: "center",
+        })
+        .setOrigin(0.5)
+        .setDepth(style.depth - 1)
+        .setAlpha(0)
+        .setScale(style.entryScale * 1.12);
+
+      glowText.setShadow(0, 0, style.color, 14, true, true);
+    }
+
+    const intensity = request.intensity ?? 0;
+    const peakScale = style.peakScale + intensity * 0.035;
+    const driftY = style.driftYPx + intensity * 4;
+    const entryY = request.channel === "top" ? baseY - 12 : baseY - 9;
+    const settleScale = request.channel === "top" ? peakScale * 0.95 : peakScale * 0.97;
 
     this.scene.tweens.add({
       targets: text,
       alpha: 1,
       scaleX: peakScale,
       scaleY: peakScale,
-      y: baseY - 9,
-      duration: 130,
+      y: entryY,
+      duration: request.channel === "top" ? 160 : 130,
       ease: "Back.Out",
+      onComplete: () => {
+        this.scene.tweens.add({
+          targets: text,
+          scaleX: settleScale,
+          scaleY: settleScale,
+          duration: 110,
+          ease: "Sine.Out",
+        });
+      },
     });
+
+    if (glowText) {
+      this.scene.tweens.add({
+        targets: glowText,
+        alpha: 0.38,
+        scaleX: peakScale * 1.1,
+        scaleY: peakScale * 1.1,
+        y: entryY - 1,
+        duration: request.channel === "top" ? 170 : 140,
+        ease: "Back.Out",
+      });
+
+      this.scene.tweens.add({
+        targets: glowText,
+        alpha: 0,
+        scaleX: peakScale * 1.22,
+        scaleY: peakScale * 1.22,
+        y: baseY - driftY * 0.9,
+        delay: 120 + style.holdMs * 0.55,
+        duration: style.fadeMs * 0.82,
+        ease: "Cubic.Out",
+        onComplete: () => {
+          glowText?.destroy();
+        },
+      });
+    }
 
     this.scene.tweens.add({
       targets: text,

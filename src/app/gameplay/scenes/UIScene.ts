@@ -105,6 +105,41 @@ export class UIScene extends Phaser.Scene {
     const shieldPipA = this.add.circle(centerX + 52, 28, 3.8, 0xb7f4ff, 0).setDepth(33);
     const shieldPipB = this.add.circle(centerX + 62, 28, 3.8, 0xb7f4ff, 0).setDepth(33);
 
+    const gaugeX = 7;
+    const gaugeTop = 16;
+    const gaugeHeight = Math.max(150, this.scale.height * 0.46);
+    const gaugeBottom = gaugeTop + gaugeHeight;
+
+    const pressureTrack = this.add
+      .rectangle(gaugeX, gaugeTop, 6, gaugeHeight, 0x07131d, 0.56)
+      .setOrigin(0, 0)
+      .setDepth(29)
+      .setAlpha(0.52);
+
+    const pressureFill = this.add
+      .rectangle(gaugeX + 1, gaugeBottom - 1, 4, 2, 0x79e9ff, 0.92)
+      .setOrigin(0, 1)
+      .setDepth(31)
+      .setAlpha(0.9);
+
+    const pressureGlow = this.add
+      .rectangle(gaugeX - 1, gaugeBottom - 2, 8, 12, 0x8deeff, 0.18)
+      .setOrigin(0, 0.5)
+      .setDepth(30)
+      .setAlpha(0.2);
+
+    const pressureLabel = this.add
+      .text(gaugeX + 10, gaugeTop - 2, "FLOW", {
+        fontFamily: HUD_FONT_STACK,
+        fontSize: "10px",
+        color: "#9AD9E7",
+        fontStyle: "700",
+      })
+      .setOrigin(0, 0)
+      .setDepth(31)
+      .setAlpha(0.74)
+      .setStroke("#03101A", 2);
+
     const failureVeil = this.add
       .rectangle(centerX, centerY, this.scale.width, this.scale.height, 0x050a12, 1)
       .setDepth(26)
@@ -140,23 +175,38 @@ export class UIScene extends Phaser.Scene {
 
     let scorePressure = 0;
     let lastScore = 0;
+    let lastRank: RankTier = "C";
+    let lastScorePulseAt = 0;
 
     const updateHud = () => {
       const snapshot = services.store.getState();
       const model = buildHudViewModel(snapshot);
 
+      const now = this.time.now;
       const scoreDelta = Math.max(0, snapshot.score.current - lastScore);
       scorePressure = Math.max(0, scorePressure - 0.025);
       if (scoreDelta > 0) {
-        scorePressure = Math.min(1.4, scorePressure + scoreDelta / 700 + snapshot.score.flowLevel * 0.06);
+        scorePressure = Math.min(1.5, scorePressure + scoreDelta / 620 + snapshot.score.flowLevel * 0.08);
       }
-      lastScore = snapshot.score.current;
 
       const rankPressure = this.rankToPressure(snapshot.score.rank);
-      const pressure = clamp(scorePressure * 0.55 + rankPressure * 0.35 + snapshot.score.flowLevel * 0.5, 0, 1.45);
+      const baseProgress = clamp(snapshot.score.current / 5200, 0, 1.08);
+      const pressure = clamp(
+        scorePressure * 0.52 + rankPressure * 0.4 + snapshot.score.flowLevel * 0.62 + baseProgress * 0.34,
+        0,
+        1.65,
+      );
+      const pressureNorm = clamp(pressure / 1.35, 0, 1);
 
-      const scoreColor = this.lerpHexColor("#DDFBFF", "#FFD7A1", pressure * 0.72);
-      const comboColor = this.lerpHexColor("#9EEFFF", "#FFF1CC", pressure * 0.66);
+      const scoreColor = this.lerpHexColor("#DDFBFF", "#FFD39B", pressureNorm * 0.84);
+      const comboColor = this.lerpHexColor("#9EEFFF", "#FFF1CC", pressureNorm * 0.78);
+      const gaugeColor = Phaser.Display.Color.Interpolate.ColorWithColor(
+        Phaser.Display.Color.ValueToColor(0x70e7ff),
+        Phaser.Display.Color.ValueToColor(0xffb469),
+        100,
+        Math.round(pressureNorm * 100),
+      );
+      const gaugeColorValue = Phaser.Display.Color.GetColor(gaugeColor.r, gaugeColor.g, gaugeColor.b);
 
       scoreText.setText(model.scoreLabel);
       bestText.setText(model.bestLabel);
@@ -165,18 +215,41 @@ export class UIScene extends Phaser.Scene {
       scorePlate.setX(this.scale.width - 18);
       scoreGlow.setX(this.scale.width - 18);
 
+      const baseScoreScale = 1 + snapshot.score.flowLevel * 0.09 + pressureNorm * 0.06;
       scoreText.setColor(scoreColor);
-      scoreText.setScale(1 + snapshot.score.flowLevel * 0.08 + pressure * 0.05);
-      scoreText.setAlpha(0.88 + pressure * 0.08);
-      scoreGlow.setFillStyle(pressure > 0.75 ? 0xffbe7b : 0x79e9ff, 1);
-      scoreGlow.setAlpha(0.08 + pressure * 0.12);
-      scorePlate.setAlpha(0.3 + pressure * 0.08);
+      scoreText.setScale(baseScoreScale);
+      scoreText.setAlpha(0.88 + pressureNorm * 0.1);
+      scoreGlow.setFillStyle(pressureNorm > 0.7 ? 0xffbe7b : 0x79e9ff, 1);
+      scoreGlow.setAlpha(0.08 + pressureNorm * 0.2);
+      scorePlate.setAlpha(0.3 + pressureNorm * 0.09);
+
+      if (scoreDelta >= 28 && now - lastScorePulseAt > 90) {
+        lastScorePulseAt = now;
+        this.tweens.killTweensOf(scoreText);
+        this.tweens.add({
+          targets: scoreText,
+          scaleX: baseScoreScale + 0.08,
+          scaleY: baseScoreScale + 0.08,
+          duration: 90,
+          yoyo: true,
+          ease: "Sine.Out",
+        });
+
+        this.tweens.killTweensOf(scoreGlow);
+        this.tweens.add({
+          targets: scoreGlow,
+          alpha: 0.2 + pressureNorm * 0.25,
+          duration: 86,
+          yoyo: true,
+          ease: "Sine.Out",
+        });
+      }
 
       if (snapshot.score.combo > 1) {
         comboText.setText(`combo x${snapshot.score.combo}  x${snapshot.score.multiplier.toFixed(2)}`);
         comboText.setColor(comboColor);
-        comboText.setScale(1 + pressure * 0.08);
-        comboText.setAlpha(0.74 + snapshot.score.flowLevel * 0.22);
+        comboText.setScale(1 + pressureNorm * 0.12);
+        comboText.setAlpha(0.74 + snapshot.score.flowLevel * 0.24);
       } else {
         comboText.setText("combo x1");
         comboText.setScale(1);
@@ -185,7 +258,56 @@ export class UIScene extends Phaser.Scene {
       }
 
       rankText.setText(`rank ${snapshot.score.rank}  shards ${snapshot.score.shardCount}`);
-      rankText.setAlpha(0.58 + snapshot.score.flowLevel * 0.22 + pressure * 0.05);
+      rankText.setAlpha(0.58 + snapshot.score.flowLevel * 0.22 + pressureNorm * 0.08);
+
+      if (snapshot.score.rank !== lastRank) {
+        this.tweens.killTweensOf(rankText);
+        this.tweens.add({
+          targets: rankText,
+          scaleX: 1.15,
+          scaleY: 1.15,
+          alpha: 1,
+          duration: 110,
+          yoyo: true,
+          ease: "Back.Out",
+        });
+
+        this.tweens.killTweensOf(pressureGlow);
+        this.tweens.add({
+          targets: pressureGlow,
+          alpha: 0.36,
+          duration: 130,
+          yoyo: true,
+          ease: "Sine.Out",
+        });
+      }
+      lastRank = snapshot.score.rank;
+
+      const fillHeight = Math.max(2, pressureNorm * gaugeHeight);
+      pressureFill.setDisplaySize(4, fillHeight);
+      pressureFill.setY(gaugeBottom);
+      pressureFill.setFillStyle(gaugeColorValue, 1);
+      pressureFill.setAlpha(0.84 + pressureNorm * 0.12);
+
+      pressureGlow.setY(gaugeBottom - fillHeight);
+      pressureGlow.setFillStyle(gaugeColorValue, 1);
+      pressureGlow.setAlpha(0.15 + pressureNorm * 0.3);
+      pressureGlow.setDisplaySize(8 + pressureNorm * 4, 10 + pressureNorm * 12);
+
+      if (pressureNorm >= 0.88) {
+        pressureLabel.setText("RUSH");
+        pressureLabel.setColor("#FFD8AA");
+        pressureLabel.setScale(1.04 + pressureNorm * 0.06);
+      } else if (pressureNorm >= 0.65) {
+        pressureLabel.setText("HEAT");
+        pressureLabel.setColor("#C9F8FF");
+        pressureLabel.setScale(1.01);
+      } else {
+        pressureLabel.setText("FLOW");
+        pressureLabel.setColor("#9AD9E7");
+        pressureLabel.setScale(1);
+      }
+      pressureLabel.setAlpha(0.7 + pressureNorm * 0.18);
 
       const fireballActive = snapshot.power.fireballMsRemaining > 0;
       if (fireballActive) {
@@ -226,6 +348,7 @@ export class UIScene extends Phaser.Scene {
       }
 
       if (!debugText) {
+        lastScore = snapshot.score.current;
         return;
       }
 
@@ -242,6 +365,8 @@ export class UIScene extends Phaser.Scene {
           `median ${(summary.medianRunMs / 1000).toFixed(1)}s | avg ${(summary.averageRunMs / 1000).toFixed(1)}s`,
         ].join("\n"),
       );
+
+      lastScore = snapshot.score.current;
     };
 
     this.input.on(Phaser.Input.Events.POINTER_DOWN, () => {

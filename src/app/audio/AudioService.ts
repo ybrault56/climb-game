@@ -1,4 +1,4 @@
-import { clamp } from "../core/math/clamp";
+﻿import { clamp } from "../core/math/clamp";
 import { GAMEPLAY_TUNING } from "../gameplay/tuning";
 
 export type AudioCue =
@@ -6,12 +6,27 @@ export type AudioCue =
   | "runStart"
   | "nearMiss"
   | "perfectPass"
-  | "phaseShift"
   | "collision"
+  | "endRun"
   | "retry"
   | "needleGateAccent"
   | "chevronShutterAccent"
-  | "prismClampAccent";
+  | "prismClampAccent"
+  | "shardPickup"
+  | "scoreBurstPickup"
+  | "fireballPickup"
+  | "fireballIgnite"
+  | "fireballActive"
+  | "wallBreak"
+  | "shieldPickup"
+  | "shieldHit"
+  | "magnetPickup"
+  | "magnetTick"
+  | "jump"
+  | "landing"
+  | "comboUp"
+  | "comboUpHigh"
+  | "rankUp";
 
 interface CueProfile {
   frequency: number;
@@ -19,6 +34,7 @@ interface CueProfile {
   durationMs: number;
   gain: number;
   type: OscillatorType;
+  attackMs?: number;
   hapticPattern?: number | number[];
   hapticMinIntervalMs?: number;
   brandLayer?: boolean;
@@ -57,23 +73,26 @@ const CUE_PROFILES: Record<AudioCue, CueProfile> = {
     hapticPattern: [8, 12, 8],
     brandLayer: true,
   },
-  phaseShift: {
-    frequency: 520,
-    endFrequency: 980,
-    durationMs: 92,
-    gain: 0.016,
-    type: "triangle",
-    hapticPattern: [10, 12, 10],
-    brandLayer: true,
-  },
   collision: {
-    frequency: 170,
-    endFrequency: 88,
-    durationMs: 108,
-    gain: 0.022,
-    type: "triangle",
+    frequency: 160,
+    endFrequency: 92,
+    durationMs: 96,
+    gain: 0.0225,
+    type: "sawtooth",
+    attackMs: 7,
     hapticPattern: [14, 12, 16],
     hapticMinIntervalMs: 70,
+    brandLayer: true,
+  },
+  endRun: {
+    frequency: 150,
+    endFrequency: 72,
+    durationMs: 172,
+    gain: 0.029,
+    type: "sawtooth",
+    attackMs: 6,
+    hapticPattern: [18, 12, 24],
+    hapticMinIntervalMs: 88,
     brandLayer: true,
   },
   retry: {
@@ -106,6 +125,145 @@ const CUE_PROFILES: Record<AudioCue, CueProfile> = {
     gain: 0.007,
     type: "triangle",
   },
+  shardPickup: {
+    frequency: 870,
+    endFrequency: 1160,
+    durationMs: 34,
+    gain: 0.008,
+    type: "triangle",
+    brandLayer: true,
+  },
+  scoreBurstPickup: {
+    frequency: 620,
+    endFrequency: 1280,
+    durationMs: 82,
+    gain: 0.0145,
+    type: "sine",
+    hapticPattern: [6, 10, 6],
+    brandLayer: true,
+  },
+  fireballPickup: {
+    frequency: 460,
+    endFrequency: 1180,
+    durationMs: 94,
+    gain: 0.0175,
+    type: "sawtooth",
+    attackMs: 7,
+    hapticPattern: [10, 12, 8],
+    brandLayer: true,
+  },
+  fireballIgnite: {
+    frequency: 380,
+    endFrequency: 1320,
+    durationMs: 120,
+    gain: 0.02,
+    type: "sawtooth",
+    attackMs: 6,
+    hapticPattern: [12, 14, 10],
+    brandLayer: true,
+  },
+  fireballActive: {
+    frequency: 370,
+    endFrequency: 580,
+    durationMs: 46,
+    gain: 0.0095,
+    type: "triangle",
+    attackMs: 8,
+    brandLayer: true,
+  },
+  wallBreak: {
+    frequency: 210,
+    endFrequency: 680,
+    durationMs: 108,
+    gain: 0.022,
+    type: "sawtooth",
+    attackMs: 6,
+    hapticPattern: [10, 14, 8],
+    brandLayer: true,
+  },
+  shieldPickup: {
+    frequency: 690,
+    endFrequency: 920,
+    durationMs: 62,
+    gain: 0.011,
+    type: "sine",
+    hapticPattern: 7,
+    brandLayer: true,
+  },
+  shieldHit: {
+    frequency: 340,
+    endFrequency: 760,
+    durationMs: 82,
+    gain: 0.0145,
+    type: "square",
+    attackMs: 6,
+    hapticPattern: [9, 8, 9],
+    brandLayer: true,
+  },
+  magnetPickup: {
+    frequency: 560,
+    endFrequency: 780,
+    durationMs: 70,
+    gain: 0.011,
+    type: "sine",
+    hapticPattern: 8,
+    brandLayer: true,
+  },
+  magnetTick: {
+    frequency: 500,
+    endFrequency: 620,
+    durationMs: 38,
+    gain: 0.006,
+    type: "sine",
+    brandLayer: true,
+  },
+  jump: {
+    frequency: 540,
+    endFrequency: 790,
+    durationMs: 52,
+    gain: 0.0105,
+    type: "triangle",
+    hapticPattern: 6,
+    brandLayer: true,
+  },
+  landing: {
+    frequency: 300,
+    endFrequency: 220,
+    durationMs: 48,
+    gain: 0.01,
+    type: "triangle",
+    hapticPattern: 6,
+    brandLayer: true,
+  },
+  comboUp: {
+    frequency: 760,
+    endFrequency: 1160,
+    durationMs: 60,
+    gain: 0.011,
+    type: "triangle",
+    attackMs: 8,
+    brandLayer: true,
+  },
+  comboUpHigh: {
+    frequency: 820,
+    endFrequency: 1380,
+    durationMs: 82,
+    gain: 0.014,
+    type: "sawtooth",
+    attackMs: 6,
+    hapticPattern: [7, 10, 7],
+    brandLayer: true,
+  },
+  rankUp: {
+    frequency: 560,
+    endFrequency: 1560,
+    durationMs: 138,
+    gain: 0.018,
+    type: "sawtooth",
+    attackMs: 6,
+    hapticPattern: [9, 12, 9],
+    brandLayer: true,
+  },
 };
 
 interface BrowserWindowWithAudio extends Window {
@@ -135,8 +293,8 @@ export class AudioService {
 
     const durationSec = profile.durationMs / 1000;
     const now = context.currentTime;
-    const tensionPitch = 1 + this.tensionLevel * 0.06;
-    const tensionGain = 0.92 + this.tensionLevel * 0.16;
+    const tensionPitch = 1 + this.tensionLevel * 0.065;
+    const tensionGain = 0.9 + this.tensionLevel * 0.18;
 
     const oscillator = context.createOscillator();
     const gainNode = context.createGain();
@@ -151,7 +309,7 @@ export class AudioService {
     gainNode.gain.setValueAtTime(0.0001, now);
     gainNode.gain.linearRampToValueAtTime(
       profile.gain * tensionGain,
-      now + Math.min(0.018, durationSec * 0.45),
+      now + (profile.attackMs !== undefined ? profile.attackMs / 1000 : Math.min(0.018, durationSec * 0.45)),
     );
     gainNode.gain.exponentialRampToValueAtTime(0.0001, now + durationSec);
 
@@ -166,15 +324,18 @@ export class AudioService {
       brandGainNode = context.createGain();
 
       brandOscillator.type = "sine";
-      brandOscillator.frequency.setValueAtTime(profile.frequency * 0.56 * (1 + this.tensionLevel * 0.04), now);
+      brandOscillator.frequency.setValueAtTime(
+        profile.frequency * 0.55 * (1 + this.tensionLevel * 0.05),
+        now,
+      );
       brandOscillator.frequency.exponentialRampToValueAtTime(
-        Math.max(50, profile.endFrequency * 0.52 * (1 + this.tensionLevel * 0.03)),
+        Math.max(50, profile.endFrequency * 0.53 * (1 + this.tensionLevel * 0.04)),
         now + durationSec,
       );
 
       brandGainNode.gain.setValueAtTime(0.0001, now);
       brandGainNode.gain.linearRampToValueAtTime(
-        profile.gain * (0.35 + this.tensionLevel * 0.12),
+        profile.gain * (0.33 + this.tensionLevel * 0.12),
         now + Math.min(0.022, durationSec * 0.5),
       );
       brandGainNode.gain.exponentialRampToValueAtTime(0.0001, now + durationSec);

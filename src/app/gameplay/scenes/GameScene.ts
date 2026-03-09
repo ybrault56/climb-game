@@ -30,6 +30,14 @@ interface FlowLine {
   railFactor: number;
 }
 
+interface SideStreak {
+  line: Phaser.GameObjects.Rectangle;
+  side: -1 | 1;
+  speedFactor: number;
+  phase: number;
+  baseOffset: number;
+}
+
 interface FeedbackPoint {
   x: number;
   y: number;
@@ -67,6 +75,7 @@ export class GameScene extends Phaser.Scene {
 
   private readonly trailDots: Phaser.GameObjects.Arc[] = [];
   private readonly flowLines: FlowLine[] = [];
+  private readonly sideStreaks: SideStreak[] = [];
 
   private obstacleGraphics: Phaser.GameObjects.Graphics | null = null;
   private bonusGraphics: Phaser.GameObjects.Graphics | null = null;
@@ -78,6 +87,10 @@ export class GameScene extends Phaser.Scene {
   private cameraTilt = 0;
   private lastCombo = 0;
   private collectedBonusCount = 0;
+  private lastFireballPulseAtMs = 0;
+  private lastMagnetTickAtMs = 0;
+  private lastSpeedParticleAtMs = 0;
+  private hitStopTimer: Phaser.Time.TimerEvent | null = null;
 
   constructor() {
     super(SCENE_KEYS.game);
@@ -114,6 +127,11 @@ export class GameScene extends Phaser.Scene {
       }
       this.flowLines.length = 0;
 
+      for (const sideStreak of this.sideStreaks) {
+        sideStreak.line.destroy();
+      }
+      this.sideStreaks.length = 0;
+
       this.playerOrb?.destroy();
       this.playerCore?.destroy();
       this.playerSpecular?.destroy();
@@ -138,6 +156,12 @@ export class GameScene extends Phaser.Scene {
       this.floatingTextFx?.clear();
       this.floatingTextFx = null;
 
+      if (this.hitStopTimer) {
+        this.hitStopTimer.remove(false);
+      }
+      this.hitStopTimer = null;
+      this.time.timeScale = 1;
+
       if (this.unsubscribeRetry) {
         this.unsubscribeRetry();
       }
@@ -158,7 +182,13 @@ export class GameScene extends Phaser.Scene {
     const fireballIntensity = this.fireballIntensity(current);
 
     if (current.status !== "running") {
-      this.renderBackground(current.difficulty.scrollSpeed, current.player, current.score.flowLevel, fireballIntensity, step.deltaMs);
+      this.renderBackground(
+        current.difficulty.scrollSpeed,
+        current.player,
+        current.score.flowLevel,
+        fireballIntensity,
+        step.deltaMs,
+      );
       this.renderRun(current, fireballIntensity);
       return;
     }
@@ -173,6 +203,12 @@ export class GameScene extends Phaser.Scene {
     });
 
     const player = services.systems.input.movePlayer(current.player, inputFrame, step.deltaMs);
+    const justLanded =
+      current.player.y > 4 &&
+      player.y <= 0.01 &&
+      player.velocityY === 0 &&
+      current.player.velocityY < -80;
+
     const elapsedMs = current.elapsedMs + step.deltaMs;
     const difficulty = services.systems.difficulty.compute(elapsedMs);
 
@@ -185,8 +221,16 @@ export class GameScene extends Phaser.Scene {
     const mergedObstacles = current.obstacles.concat(spawnTick.spawnedObstacles);
     const mergedBonuses = current.bonuses.concat(spawnTick.spawnedBonuses);
 
-    const advancedObstacles = services.systems.obstacles.advance(mergedObstacles, step.deltaMs, difficulty.scrollSpeed);
-    const advancedBonuses = services.systems.bonus.advanceBonuses(mergedBonuses, step.deltaMs, difficulty.scrollSpeed);
+    const advancedObstacles = services.systems.obstacles.advance(
+      mergedObstacles,
+      step.deltaMs,
+      difficulty.scrollSpeed,
+    );
+    const advancedBonuses = services.systems.bonus.advanceBonuses(
+      mergedBonuses,
+      step.deltaMs,
+      difficulty.scrollSpeed,
+    );
 
     const bonusFrame = services.systems.bonus.collectBonuses(player, powerTicked, advancedBonuses);
     this.collectedBonusCount += bonusFrame.collected.length;
@@ -218,6 +262,17 @@ export class GameScene extends Phaser.Scene {
         collisionObstacle = null;
         this.emitFeedbackRing(1.35, 0xa8f3ff, 0.34, 120);
         this.emitSoftPulse(0.03, 95, 0x93eeff);
+        this.emitSparkBurst(this.normalizedXToScreen(player.x), this.playerGroundScreenY() - player.y, 0xa4f2ff, 7, 0.52);
+        this.spawnFeedbackText({
+          text: "SHIELD BLOCK",
+          x: this.normalizedXToScreen(player.x),
+          y: this.playerGroundScreenY() - player.y - 42,
+          channel: "impact",
+          tone: "major",
+          color: "#CCF9FF",
+          intensity: current.score.flowLevel,
+        });
+        services.audio.play("shieldHit");
       }
     }
 
@@ -235,6 +290,21 @@ export class GameScene extends Phaser.Scene {
       brokenWalls: collisionCheck.brokenObstacleIds.length,
       jumpClears: collisionCheck.jumpClearObstacleIds.length,
     });
+
+    const fireballRatio = clamp(
+      power.fireballMsRemaining / GAMEPLAY_TUNING.power.fireballDurationMs,
+      0,
+      1,
+    );
+    const tensionLevel = clamp(
+      0.16 +
+        (difficulty.level / GAMEPLAY_TUNING.difficulty.maxLevel) * 0.44 +
+        score.flowLevel * 0.28 +
+        fireballRatio * 0.14,
+      0.12,
+      1,
+    );
+    services.audio.setTensionLevel(tensionLevel);
 
     const next: RunSnapshot = {
       ...current,
@@ -264,10 +334,21 @@ export class GameScene extends Phaser.Scene {
       collisionCheck.brokenObstacleIds.length,
       brokenObstacleImpacts,
     );
+    this.handleStateAudio(current, committed, justLanded);
 
     const nextFireballIntensity = this.fireballIntensity(committed);
-    this.renderBackground(committed.difficulty.scrollSpeed, committed.player, committed.score.flowLevel, nextFireballIntensity, step.deltaMs);
+    this.renderBackground(
+      committed.difficulty.scrollSpeed,
+      committed.player,
+      committed.score.flowLevel,
+      nextFireballIntensity,
+      step.deltaMs,
+    );
     this.renderRun(committed, nextFireballIntensity);
+
+    if (committed.status === "running") {
+      this.emitDirectionalSpeedParticles(committed, step.deltaMs);
+    }
 
     if (collisionObstacle) {
       this.handleFailure(committed, "obstacle_collision", collisionObstacle.kind);
@@ -288,7 +369,16 @@ export class GameScene extends Phaser.Scene {
     this.cameraTilt = 0;
     this.lastCombo = 0;
     this.collectedBonusCount = 0;
+    this.lastFireballPulseAtMs = 0;
+    this.lastMagnetTickAtMs = 0;
+    this.lastSpeedParticleAtMs = 0;
     this.floatingTextFx?.clear();
+
+    if (this.hitStopTimer) {
+      this.hitStopTimer.remove(false);
+    }
+    this.hitStopTimer = null;
+    this.time.timeScale = 1;
 
     if (this.fireAura) {
       this.fireAura.setAlpha(0);
@@ -406,8 +496,21 @@ export class GameScene extends Phaser.Scene {
       const railFactor = -1 + (index / 11) * 2;
       const speedFactor = 0.62 + Math.random() * 0.74;
       const phase = Math.random() * (this.scale.height + 170);
-      const line = this.add.rectangle(centerX, this.scale.height * 0.5, 1.3, 38, GAMEPLAY_TUNING.accentColor, 0.11).setDepth(-16);
+      const line = this.add
+        .rectangle(centerX, this.scale.height * 0.5, 1.3, 38, GAMEPLAY_TUNING.accentColor, 0.11)
+        .setDepth(-16);
       this.flowLines.push({ line, depth, speedFactor, phase, railFactor });
+    }
+
+    for (let index = 0; index < 14; index += 1) {
+      const side: -1 | 1 = index % 2 === 0 ? -1 : 1;
+      const speedFactor = 0.72 + Math.random() * 0.95;
+      const phase = Math.random() * (this.scale.height + 220);
+      const baseOffset = halfWidth + 16 + Math.random() * 26;
+      const line = this.add
+        .rectangle(centerX + side * baseOffset, this.scale.height * 0.5, 1.2, 42, GAMEPLAY_TUNING.accentSoftColor, 0.06)
+        .setDepth(-15);
+      this.sideStreaks.push({ line, side, speedFactor, phase, baseOffset });
     }
 
     this.obstacleGraphics = this.add.graphics().setDepth(15);
@@ -470,6 +573,13 @@ export class GameScene extends Phaser.Scene {
     const farHalf = this.corridorHalfWidth() * 0.26;
     const nearHalf = this.corridorHalfWidth() * 1.02;
 
+    const speedRatio = clamp(scrollSpeed / GAMEPLAY_TUNING.difficulty.maxScrollSpeed, 0, 1);
+    const runIntensity = clamp(
+      speedRatio * 0.72 + flowLevel * 0.58 + fireballIntensity * 0.46 + this.sensoryBoost * 0.24,
+      0,
+      2,
+    );
+
     const travelHeight = this.scale.height + 180;
     for (const flowLine of this.flowLines) {
       const travel = (this.backgroundOffsetY * flowLine.speedFactor + flowLine.phase) % travelHeight;
@@ -477,23 +587,52 @@ export class GameScene extends Phaser.Scene {
       const perspective = Math.pow(t, 1.5);
       const y = Phaser.Math.Linear(vanishingY + 14, nearY, perspective);
       const depthWidth = Phaser.Math.Linear(farHalf, nearHalf, 0.2 + flowLine.depth * 0.8);
-      const x = centerX + flowLine.railFactor * depthWidth * 0.78 + player.x * (6 + flowLine.depth * 12);
+      const x = centerX + flowLine.railFactor * depthWidth * 0.78 + player.x * (8 + flowLine.depth * 14);
       flowLine.line.setPosition(x, y);
-      flowLine.line.setDisplaySize(1.2 + flowLine.depth * 1.8, 18 + perspective * 44);
-      flowLine.line.setAlpha(0.05 + flowLine.speedFactor * (0.04 + flowLevel * 0.05 + fireballIntensity * 0.07));
+      flowLine.line.setDisplaySize(
+        1.2 + flowLine.depth * 2 + runIntensity * 0.45,
+        18 + perspective * 44 + runIntensity * 14,
+      );
+      flowLine.line.setAlpha(
+        0.045 + flowLine.speedFactor * (0.042 + flowLevel * 0.056 + fireballIntensity * 0.08 + runIntensity * 0.02),
+      );
     }
 
-    const targetDrift = player.x * GAMEPLAY_TUNING.motion.cameraDriftPx + player.velocityX * GAMEPLAY_TUNING.motion.cameraVelocityInfluence;
+    const sideTravelHeight = this.scale.height + 240;
+    for (const sideStreak of this.sideStreaks) {
+      const travel = (this.backgroundOffsetY * sideStreak.speedFactor + sideStreak.phase) % sideTravelHeight;
+      const t = clamp(travel / sideTravelHeight, 0, 1);
+      const perspective = Math.pow(t, 1.35);
+      const y = Phaser.Math.Linear(vanishingY + 6, nearY + 28, perspective);
+      const x =
+        centerX +
+        sideStreak.side * (sideStreak.baseOffset + perspective * 24 + runIntensity * 8) +
+        player.x * (8 + perspective * 6);
+      sideStreak.line.setPosition(x, y);
+      sideStreak.line.setDisplaySize(1 + runIntensity * 0.8, 14 + perspective * 42 + runIntensity * 16);
+      sideStreak.line.setAlpha(0.018 + runIntensity * 0.055 + fireballIntensity * 0.05);
+    }
+
+    const targetDrift =
+      player.x * GAMEPLAY_TUNING.motion.cameraDriftPx +
+      player.velocityX * GAMEPLAY_TUNING.motion.cameraVelocityInfluence * (1 + runIntensity * 0.2);
     this.cameraDriftX += (targetDrift - this.cameraDriftX) * GAMEPLAY_TUNING.motion.cameraDriftLerp;
     this.cameras.main.setScroll(this.cameraDriftX, -player.y * 0.06);
 
     const velocityRatio = clamp(player.velocityX / GAMEPLAY_TUNING.input.maxVelocityForEffects, -1, 1);
-    const targetTilt = -velocityRatio * (GAMEPLAY_TUNING.motion.cameraTiltMaxRad + fireballIntensity * 0.003);
+    const targetTilt =
+      -velocityRatio *
+      (GAMEPLAY_TUNING.motion.cameraTiltMaxRad + fireballIntensity * 0.003 + runIntensity * 0.0022);
     this.cameraTilt += (targetTilt - this.cameraTilt) * GAMEPLAY_TUNING.motion.cameraTiltLerp;
     this.cameras.main.setRotation(this.cameraTilt);
 
-    const speedRatio = clamp(scrollSpeed / GAMEPLAY_TUNING.difficulty.maxScrollSpeed, 0, 1);
-    const targetZoom = GAMEPLAY_TUNING.motion.baseZoom + speedRatio * GAMEPLAY_TUNING.motion.speedZoomMax + flowLevel * GAMEPLAY_TUNING.motion.flowZoomMax + fireballIntensity * 0.02 + this.sensoryBoost * 0.006;
+    const targetZoom =
+      GAMEPLAY_TUNING.motion.baseZoom +
+      speedRatio * GAMEPLAY_TUNING.motion.speedZoomMax +
+      flowLevel * GAMEPLAY_TUNING.motion.flowZoomMax +
+      fireballIntensity * 0.02 +
+      this.sensoryBoost * 0.006 +
+      runIntensity * 0.012;
     const zoom = this.cameras.main.zoom + (targetZoom - this.cameras.main.zoom) * GAMEPLAY_TUNING.motion.zoomLerp;
     this.cameras.main.setZoom(zoom);
   }
@@ -790,17 +929,18 @@ export class GameScene extends Phaser.Scene {
     const playerY = this.playerGroundScreenY() - current.player.y;
 
     if (current.player.jumpCount > previous.player.jumpCount) {
-      this.playMovementPulse(1.08);
-      this.emitFeedbackRing(1.22, 0xc3f8ff, 0.26, 90);
+      this.playMovementPulse(1.12);
+      this.emitFeedbackRing(1.24, 0xc3f8ff, 0.28, 96);
       this.spawnFeedbackText({
         text: "JUMP",
         x: playerX,
-        y: playerY - 32,
+        y: playerY - 34,
         channel: "event",
         tone: "minor",
         color: "#BEEFFF",
         intensity: current.score.flowLevel,
       });
+      services.audio.play("jump");
     }
 
     let nearMissCount = 0;
@@ -822,14 +962,15 @@ export class GameScene extends Phaser.Scene {
       this.spawnFeedbackText({
         text: `NEAR +${nearMissCount * GAMEPLAY_TUNING.skill.nearMissBonus}`,
         x: playerX + 24,
-        y: playerY - 54,
+        y: playerY - 56,
         channel: "event",
         tone: "major",
         color: "#9EEFFF",
         intensity: current.score.flowLevel,
+        sizePx: 30,
       });
       this.emitSoftPulse(0.03, 96, 0x8fecff);
-      this.emitSparkBurst(playerX + 20, playerY - 42, 0x8ceaff, 5, 0.5);
+      this.emitSparkBurst(playerX + 20, playerY - 42, 0x8ceaff, 5, 0.52);
       services.audio.play("nearMiss");
     }
 
@@ -838,14 +979,15 @@ export class GameScene extends Phaser.Scene {
       this.spawnFeedbackText({
         text: `PERFECT x${perfectCount}`,
         x: playerX - 14,
-        y: playerY - 76,
+        y: playerY - 78,
         channel: "event",
         tone: "critical",
         color: "#E8FDFF",
         intensity: current.score.flowLevel + perfectCount * 0.15,
+        sizePx: 36,
       });
-      this.emitFeedbackRing(1.34, 0xd4fdff, 0.35, 132);
-      this.emitSparkBurst(playerX - 16, playerY - 62, 0xdbfcff, 7, 0.62);
+      this.emitFeedbackRing(1.36, 0xd4fdff, 0.36, 138);
+      this.emitSparkBurst(playerX - 16, playerY - 62, 0xdbfcff, 9, 0.66);
       services.audio.play("perfectPass");
     }
 
@@ -858,29 +1000,33 @@ export class GameScene extends Phaser.Scene {
         tone: "standard",
         color: "#A3F6FF",
         intensity: current.score.flowLevel,
+        sizePx: 24,
       });
     }
 
     if (brokenWalls > 0) {
-      this.sensoryBoost = Math.min(2.2, this.sensoryBoost + brokenWalls * 0.2);
+      this.sensoryBoost = Math.min(2.25, this.sensoryBoost + brokenWalls * 0.22);
       const scoreValue = brokenWalls * GAMEPLAY_TUNING.power.fireballBreakScore;
       const impact = brokenWallImpacts[0] ?? { x: playerX, y: playerY - 18 };
       this.spawnFeedbackText({
         text: `SMASH +${scoreValue}`,
         x: impact.x,
-        y: impact.y - 14,
+        y: impact.y - 18,
         channel: "impact",
         tone: "critical",
         color: "#FFC48D",
-        intensity: current.score.flowLevel + brokenWalls * 0.2,
+        intensity: current.score.flowLevel + brokenWalls * 0.26,
+        sizePx: 38,
+        holdMs: 260,
       });
-      this.emitFeedbackRing(1.57, 0xffb177, 0.44, 148);
-      this.emitSoftPulse(0.06, 138, 0xffb678);
+      this.emitFeedbackRing(1.62, 0xffb177, 0.46, 156);
+      this.emitSoftPulse(0.065, 146, 0xffb678);
       for (const impactPoint of brokenWallImpacts) {
-        this.emitSparkBurst(impactPoint.x, impactPoint.y, 0xffbb83, 10, 0.9);
+        this.emitSparkBurst(impactPoint.x, impactPoint.y, 0xffbb83, 12, 1);
       }
-      services.audio.play("prismClampAccent");
-      this.cameras.main.shake(56, 0.0018, true);
+      this.triggerHitStop(42, 0.76);
+      services.audio.play("wallBreak");
+      this.cameras.main.shake(58, 0.0019, true);
     }
 
     for (const event of bonusEvents) {
@@ -896,7 +1042,10 @@ export class GameScene extends Phaser.Scene {
         tone: current.score.combo >= 12 ? "critical" : "major",
         color: current.score.combo >= 12 ? "#FFF0D0" : "#C5FBFF",
         intensity: current.score.flowLevel,
+        sizePx: current.score.combo >= 12 ? 34 : 28,
+        holdMs: 210,
       });
+      services.audio.play(current.score.combo >= 16 ? "comboUpHigh" : "comboUp");
     }
 
     if (current.score.rank !== previous.score.rank) {
@@ -908,8 +1057,13 @@ export class GameScene extends Phaser.Scene {
         tone: "critical",
         color: "#E7FDFF",
         intensity: current.score.flowLevel,
+        sizePx: 40,
+        holdMs: 280,
+        driftYPx: 56,
+        depth: 39,
       });
-      services.audio.play("perfectPass");
+      this.emitFeedbackRing(1.68, 0xe8fdff, 0.34, 190);
+      services.audio.play("rankUp");
     }
 
     if (current.power.fireballMsRemaining > previous.power.fireballMsRemaining) {
@@ -921,11 +1075,16 @@ export class GameScene extends Phaser.Scene {
         tone: "critical",
         color: "#FFC68F",
         intensity: 1,
+        sizePx: 46,
+        holdMs: 320,
+        driftYPx: 68,
+        depth: 40,
       });
-      this.emitSoftPulse(0.07, 160, 0xffb97d);
-      this.emitSparkBurst(playerX, playerY - 8, 0xffb27d, 14, 1);
-      services.audio.play("phaseShift");
-      this.cameras.main.shake(64, 0.0019, true);
+      this.emitSoftPulse(0.075, 170, 0xffb97d);
+      this.emitFeedbackRing(1.74, 0xffbc84, 0.4, 220);
+      this.emitSparkBurst(playerX, playerY - 8, 0xffb27d, 16, 1.08);
+      services.audio.play("fireballIgnite");
+      this.cameras.main.shake(66, 0.00195, true);
     }
 
     this.lastCombo = current.score.combo;
@@ -947,7 +1106,7 @@ export class GameScene extends Phaser.Scene {
         intensity: flowLevel,
       });
       this.emitSparkBurst(x, y, 0x93ecff, 4, 0.34);
-      services.audio.play("nearMiss");
+      services.audio.play("shardPickup");
       return;
     }
 
@@ -960,9 +1119,10 @@ export class GameScene extends Phaser.Scene {
         tone: "major",
         color: "#D6FCFF",
         intensity: flowLevel,
+        sizePx: 30,
       });
-      this.emitSparkBurst(x, y, 0xd6fcff, 7, 0.52);
-      services.audio.play("perfectPass");
+      this.emitSparkBurst(x, y, 0xd6fcff, 8, 0.56);
+      services.audio.play("scoreBurstPickup");
       return;
     }
 
@@ -975,6 +1135,7 @@ export class GameScene extends Phaser.Scene {
         tone: "major",
         color: "#FFCB94",
         intensity: 1,
+        sizePx: 32,
       });
       this.emitSparkBurst(x, y, 0xffbe84, 8, 0.66);
       return;
@@ -989,9 +1150,10 @@ export class GameScene extends Phaser.Scene {
         tone: "standard",
         color: "#B7F4FF",
         intensity: flowLevel,
+        sizePx: 26,
       });
-      this.emitSparkBurst(x, y, 0xaef3ff, 5, 0.4);
-      services.audio.play("uiTap");
+      this.emitSparkBurst(x, y, 0xaef3ff, 6, 0.44);
+      services.audio.play("shieldPickup");
       return;
     }
 
@@ -1003,9 +1165,10 @@ export class GameScene extends Phaser.Scene {
       tone: "standard",
       color: "#BCF8FF",
       intensity: flowLevel,
+      sizePx: 26,
     });
-    this.emitSparkBurst(x, y, 0xc5f9ff, 5, 0.4);
-    services.audio.play("uiTap");
+    this.emitSparkBurst(x, y, 0xc5f9ff, 6, 0.44);
+    services.audio.play("magnetPickup");
   }
 
   private spawnFeedbackText(options: {
@@ -1016,8 +1179,24 @@ export class GameScene extends Phaser.Scene {
     tone: "minor" | "standard" | "major" | "critical";
     color: string;
     intensity?: number;
+    sizePx?: number;
+    holdMs?: number;
+    driftYPx?: number;
+    depth?: number;
   }): void {
-    const request = {
+    const request: {
+      text: string;
+      x: number;
+      y: number;
+      channel: "combo" | "event" | "pickup" | "impact" | "top";
+      tone: "minor" | "standard" | "major" | "critical";
+      color: string;
+      intensity?: number;
+      sizePx?: number;
+      holdMs?: number;
+      driftYPx?: number;
+      depth?: number;
+    } = {
       text: options.text,
       x: options.x,
       y: options.y,
@@ -1027,11 +1206,23 @@ export class GameScene extends Phaser.Scene {
     };
 
     if (options.intensity !== undefined) {
-      this.floatingTextFx?.show({
-        ...request,
-        intensity: options.intensity,
-      });
-      return;
+      request.intensity = options.intensity;
+    }
+
+    if (options.sizePx !== undefined) {
+      request.sizePx = options.sizePx;
+    }
+
+    if (options.holdMs !== undefined) {
+      request.holdMs = options.holdMs;
+    }
+
+    if (options.driftYPx !== undefined) {
+      request.driftYPx = options.driftYPx;
+    }
+
+    if (options.depth !== undefined) {
+      request.depth = options.depth;
     }
 
     this.floatingTextFx?.show(request);
@@ -1063,6 +1254,48 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
+  private emitDirectionalSpeedParticles(snapshot: RunSnapshot, deltaMs: number): void {
+    const speedRatio = clamp(snapshot.difficulty.scrollSpeed / GAMEPLAY_TUNING.difficulty.maxScrollSpeed, 0, 1);
+    const intensity = clamp(speedRatio * 0.62 + snapshot.score.flowLevel * 0.74 + this.sensoryBoost * 0.25, 0, 2.2);
+    if (intensity < 0.55) {
+      return;
+    }
+
+    const now = this.time.now;
+    const intervalMs = Math.max(48, 108 - intensity * 32 - Math.min(16, deltaMs * 0.08));
+    if (now - this.lastSpeedParticleAtMs < intervalMs) {
+      return;
+    }
+    this.lastSpeedParticleAtMs = now;
+
+    const baseX = this.normalizedXToScreen(snapshot.player.x);
+    const baseY = this.playerGroundScreenY() - snapshot.player.y;
+    const side = Math.random() < 0.5 ? -1 : 1;
+    const color = snapshot.power.fireballMsRemaining > 0 ? 0xffb783 : GAMEPLAY_TUNING.accentSoftColor;
+
+    const streak = this.add
+      .rectangle(
+        baseX + side * (GAMEPLAY_TUNING.layout.playerRadiusPx * (1.8 + Math.random() * 1.6)),
+        baseY + Phaser.Math.Between(-14, 14),
+        1.2 + intensity * 0.9,
+        18 + intensity * 26,
+        color,
+        0.2 + intensity * 0.09,
+      )
+      .setDepth(14)
+      .setAngle(side * (6 + intensity * 10));
+
+    this.tweens.add({
+      targets: streak,
+      y: streak.y - (70 + intensity * 68),
+      x: streak.x + side * (7 + intensity * 9),
+      alpha: 0,
+      scaleY: 0.2,
+      duration: 220 + intensity * 90,
+      ease: "Cubic.Out",
+      onComplete: () => streak.destroy(),
+    });
+  }
   private resolveObstacleImpactPoints(
     obstacles: readonly ObstacleState[],
     obstacleIds: readonly number[],
@@ -1101,6 +1334,51 @@ export class GameScene extends Phaser.Scene {
     return points;
   }
 
+  private handleStateAudio(previous: RunSnapshot, current: RunSnapshot, justLanded: boolean): void {
+    const services = resolveSceneServices();
+
+    if (justLanded) {
+      services.audio.play("landing");
+      this.emitSparkBurst(
+        this.normalizedXToScreen(current.player.x),
+        this.playerGroundScreenY(),
+        0x8de9ff,
+        4,
+        0.3,
+      );
+    }
+
+    if (current.power.fireballMsRemaining > 0) {
+      if (current.elapsedMs - this.lastFireballPulseAtMs >= 330) {
+        services.audio.play("fireballActive");
+        this.lastFireballPulseAtMs = current.elapsedMs;
+      }
+    } else if (previous.power.fireballMsRemaining > 0) {
+      this.lastFireballPulseAtMs = current.elapsedMs;
+    }
+
+    if (current.power.magnetMsRemaining > 0) {
+      if (current.elapsedMs - this.lastMagnetTickAtMs >= 540) {
+        services.audio.play("magnetTick");
+        this.lastMagnetTickAtMs = current.elapsedMs;
+      }
+    } else if (previous.power.magnetMsRemaining > 0) {
+      this.lastMagnetTickAtMs = current.elapsedMs;
+    }
+  }
+
+  private triggerHitStop(durationMs: number, timeScale: number): void {
+    if (this.hitStopTimer) {
+      this.hitStopTimer.remove(false);
+    }
+
+    this.time.timeScale = clamp(timeScale, 0.24, 1);
+    this.hitStopTimer = this.time.delayedCall(durationMs, () => {
+      this.time.timeScale = 1;
+      this.hitStopTimer = null;
+    });
+  }
+
   private handleFailure(
     snapshot: RunSnapshot,
     deathCause: RunDeathCause,
@@ -1109,7 +1387,7 @@ export class GameScene extends Phaser.Scene {
     const services = resolveSceneServices();
 
     services.systems.fx.playFailureFx(this.cameras.main);
-    services.audio.play("collision");
+    services.audio.play("endRun");
     services.audio.setTensionLevel(0.12);
 
     services.highscoreRepository.saveBestScore(snapshot.score.best);
@@ -1159,24 +1437,37 @@ export class GameScene extends Phaser.Scene {
   ): void {
     let currentTargetX = targetX;
     let currentTargetY = targetY;
-    const flow = clamp(flowValue, 0, 2);
+    const flow = clamp(flowValue, 0, 2.4);
     const velocityRatio = clamp(velocityX / GAMEPLAY_TUNING.input.maxVelocityForEffects, -1, 1);
-    const velocityLagBase = -velocityRatio * GAMEPLAY_TUNING.motion.trailVelocityOffsetPx;
+    const speedEnergy = Math.abs(velocityRatio);
+    const trailEnergy = clamp(flow * 0.55 + speedEnergy * 0.75 + fireballIntensity * 0.9, 0, 2.4);
+    const velocityLagBase = -velocityRatio * GAMEPLAY_TUNING.motion.trailVelocityOffsetPx * (1 + trailEnergy * 0.2);
 
     for (let index = 0; index < this.trailDots.length; index += 1) {
       const trailDot = this.trailDots[index];
       if (!trailDot) {
         continue;
       }
-      const lagFactor = 0.2 + index * 0.16;
+
+      const lagFactor = 0.22 + index * 0.17 + trailEnergy * 0.03;
       const desiredX = currentTargetX + velocityLagBase * lagFactor;
-      const desiredY = currentTargetY + (2 + index * 2.1);
+      const desiredY = currentTargetY + (2 + index * 2.4 + trailEnergy * 1.5);
 
       trailDot.x += (desiredX - trailDot.x) * GAMEPLAY_TUNING.motion.trailLerp;
       trailDot.y += (desiredY - trailDot.y) * GAMEPLAY_TUNING.motion.trailLerp;
-      trailDot.setAlpha(Math.max(0.04, 0.22 - index * 0.03) + flow * 0.06 + fireballIntensity * 0.08);
-      trailDot.setScale(1 + flow * 0.2 + fireballIntensity * 0.13);
-      trailDot.setFillStyle(fireballIntensity > 0.01 ? 0xffa96f : GAMEPLAY_TUNING.accentColor, 1);
+      trailDot.setAlpha(
+        Math.max(0.05, 0.23 - index * 0.028) +
+          flow * 0.07 +
+          fireballIntensity * 0.1 +
+          speedEnergy * 0.07,
+      );
+      trailDot.setScale(1 + flow * 0.24 + fireballIntensity * 0.2 + speedEnergy * 0.1);
+
+      if (fireballIntensity > 0.01) {
+        trailDot.setFillStyle(0xffa96f, 1);
+      } else {
+        trailDot.setFillStyle(trailEnergy > 1.2 ? GAMEPLAY_TUNING.accentSoftColor : GAMEPLAY_TUNING.accentColor, 1);
+      }
 
       currentTargetX = trailDot.x;
       currentTargetY = trailDot.y;
@@ -1329,6 +1620,23 @@ export class GameScene extends Phaser.Scene {
     return "center";
   }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
