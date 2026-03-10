@@ -1,10 +1,18 @@
-﻿export type RunStatus = "idle" | "running" | "failed";
+export type RunStatus = "idle" | "running" | "failed";
 
 export type ObstacleKind = "solid_wall" | "tight_gate" | "low_wall" | "breakable_wall";
 export type ObstacleSignature = "neutral" | "needle_gate" | "chevron_shutter" | "prism_clamp";
 export type PassQuality = "near_miss" | "perfect_pass" | "clean_pass" | "jump_clear" | "wall_break";
 
-export type BonusKind = "shard" | "fireball" | "score_burst" | "shield" | "magnet";
+export type BonusKind =
+  | "shard"
+  | "fireball"
+  | "missile_burst"
+  | "ghost_core"
+  | "score_burst"
+  | "shield"
+  | "magnet";
+
 export type RankTier = "C" | "B" | "A" | "S" | "SS";
 
 export interface InputFrame {
@@ -33,10 +41,16 @@ export interface PhaseShiftState {
 
 export interface PowerState {
   fireballMsRemaining: number;
+  missileMsRemaining: number;
+  missileShotCooldownMs: number;
+  ghostMsRemaining: number;
   shieldCharges: number;
   magnetMsRemaining: number;
   fireballPickupCount: number;
+  missilePickupCount: number;
+  ghostPickupCount: number;
   fireballBreakCount: number;
+  missileBreakCount: number;
 }
 
 export interface ObstacleState {
@@ -99,6 +113,7 @@ export interface ScoreState {
   multiplier: number;
   shardCount: number;
   fireballBreakCount: number;
+  missileBreakCount: number;
   rank: RankTier;
 }
 
@@ -113,5 +128,3 @@ export interface RunSnapshot {
   difficulty: DifficultySnapshot;
   score: ScoreState;
 }
-
-

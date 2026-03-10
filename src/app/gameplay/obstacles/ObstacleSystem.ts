@@ -1,5 +1,6 @@
+import { clamp } from "../../core/math/clamp";
 import { GAMEPLAY_TUNING } from "../tuning";
-import type { ObstacleState, PassEvent, PlayerState } from "../types";
+import type { ObstacleKind, ObstacleState, PassEvent, PlayerState } from "../types";
 
 export interface CollisionCheckResult {
   collisionObstacle: ObstacleState | null;
@@ -26,9 +27,18 @@ export class ObstacleSystem {
     player: PlayerState,
     obstacles: readonly ObstacleState[],
     fireballActive: boolean,
+    ghostActive: boolean,
   ): CollisionCheckResult {
     const brokenObstacleIds: number[] = [];
     const jumpClearObstacleIds: number[] = [];
+
+    if (ghostActive) {
+      return {
+        collisionObstacle: null,
+        brokenObstacleIds,
+        jumpClearObstacleIds,
+      };
+    }
 
     for (const obstacle of obstacles) {
       if (Math.abs(obstacle.y - player.y) > GAMEPLAY_TUNING.collision.verticalWindowPx) {
@@ -80,6 +90,43 @@ export class ObstacleSystem {
       brokenObstacleIds,
       jumpClearObstacleIds,
     };
+  }
+
+  selectMissileTarget(player: PlayerState, obstacles: readonly ObstacleState[]): ObstacleState | null {
+    let best: ObstacleState | null = null;
+    let bestScore = -Infinity;
+
+    for (const obstacle of obstacles) {
+      const aheadY = obstacle.y - player.y;
+      if (aheadY < 12 || aheadY > 260) {
+        continue;
+      }
+
+      const targetX = this.impactXForObstacle(player.x, obstacle);
+      const lateralDistance = Math.abs(targetX - player.x);
+      const proximity = 1 - clamp(aheadY / 260, 0, 1);
+      const breakWeight = this.canMissileBreak(obstacle.kind) ? 0.55 : 0;
+      const score = proximity * 0.95 + obstacle.risk * 0.62 + breakWeight - lateralDistance * 0.6;
+
+      if (score > bestScore) {
+        bestScore = score;
+        best = obstacle;
+      }
+    }
+
+    return best;
+  }
+
+  canMissileBreak(kind: ObstacleKind): boolean {
+    return kind === "tight_gate" || kind === "low_wall" || kind === "breakable_wall";
+  }
+
+  impactXForObstacle(playerX: number, obstacle: ObstacleState): number {
+    if (obstacle.kind === "low_wall" || obstacle.kind === "breakable_wall") {
+      return playerX;
+    }
+
+    return obstacle.gapCenterX;
   }
 
   evaluatePassEvents(

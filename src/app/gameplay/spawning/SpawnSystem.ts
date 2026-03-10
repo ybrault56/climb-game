@@ -139,7 +139,10 @@ export class SpawnSystem {
       kind = "tight_gate";
     } else if (roll < GAMEPLAY_TUNING.spawn.tightGateChance + GAMEPLAY_TUNING.spawn.solidWallChance) {
       kind = "solid_wall";
-    } else if (roll < GAMEPLAY_TUNING.spawn.tightGateChance + GAMEPLAY_TUNING.spawn.solidWallChance + GAMEPLAY_TUNING.spawn.lowWallChance) {
+    } else if (
+      roll <
+      GAMEPLAY_TUNING.spawn.tightGateChance + GAMEPLAY_TUNING.spawn.solidWallChance + GAMEPLAY_TUNING.spawn.lowWallChance
+    ) {
       kind = "low_wall";
     } else {
       kind = difficulty.level >= 4 ? "breakable_wall" : "solid_wall";
@@ -167,29 +170,56 @@ export class SpawnSystem {
   ): BonusKind {
     const chapter = this.resolveChapter(elapsedMs);
 
-    if (lastKind === "breakable_wall" && random() < 0.5) {
-      return "fireball";
+    if (lastKind === "breakable_wall" && random() < 0.54) {
+      return random() < 0.64 ? "fireball" : "missile_burst";
     }
 
     const pressure = clamp(difficulty.level / GAMEPLAY_TUNING.difficulty.maxLevel, 0, 1);
     const roll = random();
 
-    const fireballChance = GAMEPLAY_TUNING.bonus.fireballChance + (chapter === "fire_pressure" ? 0.06 : 0) + pressure * 0.02;
+    const fireballChance =
+      GAMEPLAY_TUNING.bonus.fireballChance + (chapter === "fire_pressure" ? 0.05 : 0) + pressure * 0.02;
+    const missileChance =
+      GAMEPLAY_TUNING.bonus.missileChance +
+      (chapter === "lateral_nervous" ? 0.05 : 0) +
+      (chapter === "fire_pressure" ? 0.02 : 0) +
+      pressure * 0.018;
+    const ghostChance =
+      GAMEPLAY_TUNING.bonus.ghostChance + (chapter === "flow_mastery" ? 0.04 : 0) + pressure * 0.012;
     const scoreBurstChance = GAMEPLAY_TUNING.bonus.scoreBurstChance + pressure * 0.04;
 
     if (roll < fireballChance) {
       return "fireball";
     }
 
-    if (roll < fireballChance + scoreBurstChance) {
+    if (roll < fireballChance + missileChance) {
+      return "missile_burst";
+    }
+
+    if (roll < fireballChance + missileChance + ghostChance) {
+      return "ghost_core";
+    }
+
+    if (roll < fireballChance + missileChance + ghostChance + scoreBurstChance) {
       return "score_burst";
     }
 
-    if (roll < fireballChance + scoreBurstChance + GAMEPLAY_TUNING.bonus.shieldChance) {
+    if (
+      roll <
+      fireballChance + missileChance + ghostChance + scoreBurstChance + GAMEPLAY_TUNING.bonus.shieldChance
+    ) {
       return "shield";
     }
 
-    if (roll < fireballChance + scoreBurstChance + GAMEPLAY_TUNING.bonus.shieldChance + GAMEPLAY_TUNING.bonus.magnetChance) {
+    if (
+      roll <
+      fireballChance +
+        missileChance +
+        ghostChance +
+        scoreBurstChance +
+        GAMEPLAY_TUNING.bonus.shieldChance +
+        GAMEPLAY_TUNING.bonus.magnetChance
+    ) {
       return "magnet";
     }
 
@@ -212,6 +242,14 @@ export class SpawnSystem {
 
     if (kind === "fireball") {
       return GAMEPLAY_TUNING.power.fireballPickupScore;
+    }
+
+    if (kind === "missile_burst") {
+      return GAMEPLAY_TUNING.power.missilePickupScore;
+    }
+
+    if (kind === "ghost_core") {
+      return GAMEPLAY_TUNING.power.ghostPickupScore;
     }
 
     return 14;

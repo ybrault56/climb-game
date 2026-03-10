@@ -7,7 +7,8 @@ const SCORE_PER_SECOND = 14;
 export interface ScoreFrameInput {
   passEvents: readonly PassEvent[];
   bonusEvents: readonly BonusCollectEvent[];
-  brokenWalls: number;
+  fireballBreakWalls: number;
+  missileBreakWalls: number;
   jumpClears: number;
 }
 
@@ -30,6 +31,7 @@ export class ScoreSystem {
       multiplier: 1,
       shardCount: 0,
       fireballBreakCount: 0,
+      missileBreakCount: 0,
       rank: "C",
     };
   }
@@ -47,6 +49,7 @@ export class ScoreSystem {
     let comboTimerMs = Math.max(0, previous.comboTimerMs - deltaMs);
     let shardCount = previous.shardCount;
     let fireballBreakCount = previous.fireballBreakCount;
+    let missileBreakCount = previous.missileBreakCount;
 
     let rewardTriggers = 0;
 
@@ -84,11 +87,18 @@ export class ScoreSystem {
       rewardTriggers += frame.jumpClears;
     }
 
-    if (frame.brokenWalls > 0) {
-      fireballBreakCount += frame.brokenWalls;
-      bonusScore += frame.brokenWalls * GAMEPLAY_TUNING.power.fireballBreakScore;
-      precisionChain += frame.brokenWalls;
-      rewardTriggers += frame.brokenWalls * 2;
+    if (frame.fireballBreakWalls > 0) {
+      fireballBreakCount += frame.fireballBreakWalls;
+      bonusScore += frame.fireballBreakWalls * GAMEPLAY_TUNING.power.fireballBreakScore;
+      precisionChain += frame.fireballBreakWalls;
+      rewardTriggers += frame.fireballBreakWalls * 2;
+    }
+
+    if (frame.missileBreakWalls > 0) {
+      missileBreakCount += frame.missileBreakWalls;
+      bonusScore += frame.missileBreakWalls * GAMEPLAY_TUNING.power.missileBreakScore;
+      precisionChain += frame.missileBreakWalls;
+      rewardTriggers += frame.missileBreakWalls;
     }
 
     for (const bonusEvent of frame.bonusEvents) {
@@ -103,7 +113,7 @@ export class ScoreSystem {
         rewardTriggers += 1;
       }
 
-      if (bonusEvent.kind === "fireball") {
+      if (bonusEvent.kind === "fireball" || bonusEvent.kind === "missile_burst" || bonusEvent.kind === "ghost_core") {
         precisionChain += 1;
       }
     }
@@ -140,6 +150,7 @@ export class ScoreSystem {
       multiplier,
       shardCount,
       fireballBreakCount,
+      missileBreakCount,
       rank,
     };
   }

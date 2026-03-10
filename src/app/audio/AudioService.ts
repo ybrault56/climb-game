@@ -1,4 +1,4 @@
-﻿import { clamp } from "../core/math/clamp";
+import { clamp } from "../core/math/clamp";
 import { GAMEPLAY_TUNING } from "../gameplay/tuning";
 
 export type AudioCue =
@@ -17,6 +17,10 @@ export type AudioCue =
   | "fireballPickup"
   | "fireballIgnite"
   | "fireballActive"
+  | "missilePickup"
+  | "missileShot"
+  | "ghostPickup"
+  | "ghostPulse"
   | "wallBreak"
   | "shieldPickup"
   | "shieldHit"
@@ -27,6 +31,8 @@ export type AudioCue =
   | "comboUp"
   | "comboUpHigh"
   | "rankUp";
+
+export type AudioBedState = "idle" | "flow" | "heat" | "rush" | "failed";
 
 interface CueProfile {
   frequency: number;
@@ -171,6 +177,43 @@ const CUE_PROFILES: Record<AudioCue, CueProfile> = {
     attackMs: 8,
     brandLayer: true,
   },
+  missilePickup: {
+    frequency: 520,
+    endFrequency: 1240,
+    durationMs: 86,
+    gain: 0.0165,
+    type: "sawtooth",
+    attackMs: 6,
+    hapticPattern: [8, 11, 8],
+    brandLayer: true,
+  },
+  missileShot: {
+    frequency: 780,
+    endFrequency: 1280,
+    durationMs: 54,
+    gain: 0.0135,
+    type: "square",
+    attackMs: 5,
+    hapticPattern: 7,
+    brandLayer: true,
+  },
+  ghostPickup: {
+    frequency: 640,
+    endFrequency: 980,
+    durationMs: 78,
+    gain: 0.0135,
+    type: "triangle",
+    hapticPattern: [7, 9, 7],
+    brandLayer: true,
+  },
+  ghostPulse: {
+    frequency: 430,
+    endFrequency: 540,
+    durationMs: 48,
+    gain: 0.0075,
+    type: "sine",
+    brandLayer: true,
+  },
   wallBreak: {
     frequency: 210,
     endFrequency: 680,
@@ -270,13 +313,100 @@ interface BrowserWindowWithAudio extends Window {
   webkitAudioContext?: typeof AudioContext;
 }
 
+type BedLayerKey = "flow" | "heat" | "rush";
+
+interface BedLayerProfile {
+  frequency: number;
+  tensionFrequencyRange: number;
+  gain: number;
+  type: OscillatorType;
+}
+
+interface BedLayerNodes {
+  profile: BedLayerProfile;
+  oscillator: OscillatorNode;
+  gain: GainNode;
+}
+
+interface BedNodes {
+  masterGain: GainNode;
+  filter: BiquadFilterNode;
+  layers: Record<BedLayerKey, BedLayerNodes>;
+}
+
+const BED_LAYER_PROFILES: Record<BedLayerKey, BedLayerProfile> = {
+  flow: {
+    frequency: 86,
+    tensionFrequencyRange: 42,
+    gain: 0.0112,
+    type: "sine",
+  },
+  heat: {
+    frequency: 132,
+    tensionFrequencyRange: 74,
+    gain: 0.0098,
+    type: "triangle",
+  },
+  rush: {
+    frequency: 192,
+    tensionFrequencyRange: 96,
+    gain: 0.0082,
+    type: "sawtooth",
+  },
+};
+
+const BED_STATE_WEIGHTS: Record<AudioBedState, Record<BedLayerKey, number>> = {
+  idle: {
+    flow: 0.32,
+    heat: 0,
+    rush: 0,
+  },
+  flow: {
+    flow: 1,
+    heat: 0.1,
+    rush: 0,
+  },
+  heat: {
+    flow: 0.88,
+    heat: 0.74,
+    rush: 0.16,
+  },
+  rush: {
+    flow: 0.74,
+    heat: 0.9,
+    rush: 1,
+  },
+  failed: {
+    flow: 0,
+    heat: 0,
+    rush: 0,
+  },
+};
+
+const BED_MASTER_GAIN: Record<AudioBedState, number> = {
+  idle: 0.35,
+  flow: 0.72,
+  heat: 0.86,
+  rush: 1,
+  failed: 0,
+};
+
 export class AudioService {
   private context: AudioContext | null = null;
   private lastHapticAt = 0;
   private tensionLevel = 0.18;
+  private bedState: AudioBedState = "idle";
+  private bed: BedNodes | null = null;
 
   setTensionLevel(level: number): void {
     this.tensionLevel = clamp(level, 0, 1);
+    this.syncBedMix(false, this.bedState);
+  }
+
+  setBedState(state: AudioBedState): void {
+    const previousState = this.bedState;
+    this.bedState = state;
+    this.syncBedMix(true, previousState);
   }
 
   play(cue: AudioCue): void {
@@ -360,6 +490,119 @@ export class AudioService {
     };
   }
 
+  private syncBedMix(isTransition: boolean, previousState: AudioBedState): void {
+    const context = this.ensureAudioContext();
+    if (!context) {
+      return;
+    }
+
+    const bed = this.ensureBed(context);
+    const now = context.currentTime;
+    const weights = BED_STATE_WEIGHTS[this.bedState];
+    const tension = this.tensionLevel;
+
+    const targetFilterFrequency = 700 + tension * 620 + (this.bedState === "rush" ? 80 : 0);
+    bed.filter.frequency.cancelScheduledValues(now);
+    bed.filter.frequency.setTargetAtTime(targetFilterFrequency, now, isTransition ? 0.12 : 0.2);
+
+    for (const layerName of Object.keys(bed.layers) as BedLayerKey[]) {
+      const layer = bed.layers[layerName];
+      const frequencyTarget =
+        (layer.profile.frequency + layer.profile.tensionFrequencyRange * tension) *
+        (this.bedState === "failed" ? 0.82 : 1);
+      const gainTarget =
+        layer.profile.gain *
+        weights[layerName] *
+        (0.74 + tension * 0.42) *
+        (this.bedState === "rush" && layerName === "rush" ? 1.12 : 1);
+
+      layer.oscillator.frequency.cancelScheduledValues(now);
+      layer.oscillator.frequency.setTargetAtTime(
+        Math.max(36, frequencyTarget),
+        now,
+        isTransition ? 0.08 : 0.14,
+      );
+
+      layer.gain.gain.cancelScheduledValues(now);
+      if (this.bedState === "failed") {
+        layer.gain.gain.linearRampToValueAtTime(0.0001, now + 0.12);
+      } else {
+        layer.gain.gain.setTargetAtTime(
+          Math.max(0.0001, gainTarget),
+          now,
+          isTransition ? 0.08 : 0.16,
+        );
+      }
+    }
+
+    const masterGainTarget = BED_MASTER_GAIN[this.bedState];
+    bed.masterGain.gain.cancelScheduledValues(now);
+
+    if (this.bedState === "failed") {
+      bed.masterGain.gain.linearRampToValueAtTime(0.0001, now + 0.12);
+      return;
+    }
+
+    if (previousState === "failed") {
+      bed.masterGain.gain.setValueAtTime(0.0001, now);
+      bed.masterGain.gain.linearRampToValueAtTime(masterGainTarget, now + 0.14);
+      return;
+    }
+
+    bed.masterGain.gain.setTargetAtTime(
+      Math.max(0.0001, masterGainTarget),
+      now,
+      isTransition ? 0.09 : 0.18,
+    );
+  }
+
+  private ensureBed(context: AudioContext): BedNodes {
+    if (this.bed) {
+      return this.bed;
+    }
+
+    const now = context.currentTime;
+    const masterGain = context.createGain();
+    const filter = context.createBiquadFilter();
+
+    masterGain.gain.setValueAtTime(0.0001, now);
+    filter.type = "lowpass";
+    filter.frequency.setValueAtTime(760, now);
+    filter.Q.setValueAtTime(0.85, now);
+
+    masterGain.connect(filter);
+    filter.connect(context.destination);
+
+    const layers = {} as Record<BedLayerKey, BedLayerNodes>;
+    for (const layerName of Object.keys(BED_LAYER_PROFILES) as BedLayerKey[]) {
+      const profile = BED_LAYER_PROFILES[layerName];
+      const oscillator = context.createOscillator();
+      const gain = context.createGain();
+
+      oscillator.type = profile.type;
+      oscillator.frequency.setValueAtTime(profile.frequency, now);
+      gain.gain.setValueAtTime(0.0001, now);
+
+      oscillator.connect(gain);
+      gain.connect(masterGain);
+      oscillator.start(now);
+
+      layers[layerName] = {
+        profile,
+        oscillator,
+        gain,
+      };
+    }
+
+    this.bed = {
+      masterGain,
+      filter,
+      layers,
+    };
+
+    return this.bed;
+  }
+
   private playHaptic(profile: CueProfile): void {
     if (!GAMEPLAY_TUNING.material.hapticEnabled || profile.hapticPattern === undefined) {
       return;
@@ -403,3 +646,8 @@ export class AudioService {
     return this.context;
   }
 }
+
+
+
+
+

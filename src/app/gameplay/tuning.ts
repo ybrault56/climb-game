@@ -39,17 +39,25 @@ export const GAMEPLAY_TUNING = {
 
   power: {
     fireballDurationMs: 4200,
+    missileDurationMs: 3600,
+    ghostDurationMs: 2600,
     magnetDurationMs: 3600,
+    missileShotEveryMs: 240,
     fireballBreakScore: 35,
+    missileBreakScore: 26,
     fireballPickupScore: 24,
+    missilePickupScore: 20,
+    ghostPickupScore: 18,
   },
 
   bonus: {
     spawnEveryMs: 780,
     minSpawnEveryMs: 430,
     spawnY: 760,
-    shardChance: 0.64,
-    fireballChance: 0.12,
+    shardChance: 0.56,
+    fireballChance: 0.11,
+    missileChance: 0.08,
+    ghostChance: 0.05,
     scoreBurstChance: 0.14,
     shieldChance: 0.06,
     magnetChance: 0.04,

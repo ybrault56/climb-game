@@ -1,10 +1,11 @@
-﻿import Phaser from "phaser";
+import Phaser from "phaser";
 import { clamp } from "../../core/math/clamp";
 import { buildHudViewModel } from "../../ui/hud/HudViewModel";
-import type { RankTier } from "../types";
 import { resolveSceneServices } from "../contracts/SceneSystemContract";
+import { createRunStateFusion } from "../progression/RunStateFusion";
 import { SCENE_KEYS } from "./sceneKeys";
 import { GAMEPLAY_TUNING } from "../tuning";
+import type { RunStatus } from "../types";
 
 const HUD_FONT_STACK = '"Avenir Next", "SF Pro Display", "Segoe UI Variable", "Segoe UI", sans-serif';
 
@@ -158,6 +159,13 @@ export class UIScene extends Phaser.Scene {
       .setStroke("#03121e", 3)
       .setShadow(0, 3, "#01070E", 8, true, true);
 
+    const retryRipple = this.add
+      .circle(centerX, centerY - 8, 78, 0xc6f9ff, 0)
+      .setDepth(32)
+      .setStrokeStyle(2, 0xe8fdff, 0.5)
+      .setScale(1)
+      .setAlpha(0);
+
     const runHintText = this.add
       .text(centerX, this.scale.height - 56, "", {
         fontFamily: HUD_FONT_STACK,
@@ -175,8 +183,10 @@ export class UIScene extends Phaser.Scene {
 
     let scorePressure = 0;
     let lastScore = 0;
-    let lastRank: RankTier = "C";
+    let lastRank = services.store.getState().score.rank;
     let lastScorePulseAt = 0;
+    let lastStatus: RunStatus = services.store.getState().status;
+    let retryTransitionActive = false;
 
     const updateHud = () => {
       const snapshot = services.store.getState();
@@ -189,13 +199,13 @@ export class UIScene extends Phaser.Scene {
         scorePressure = Math.min(1.5, scorePressure + scoreDelta / 620 + snapshot.score.flowLevel * 0.08);
       }
 
-      const rankPressure = this.rankToPressure(snapshot.score.rank);
-      const baseProgress = clamp(snapshot.score.current / 5200, 0, 1.08);
-      const pressure = clamp(
-        scorePressure * 0.52 + rankPressure * 0.4 + snapshot.score.flowLevel * 0.62 + baseProgress * 0.34,
+      const fireballIntensity = clamp(
+        snapshot.power.fireballMsRemaining / GAMEPLAY_TUNING.power.fireballDurationMs,
         0,
-        1.65,
+        1,
       );
+      const fusion = createRunStateFusion(snapshot, fireballIntensity, scorePressure);
+      const pressure = clamp(fusion.pressure + scorePressure * 0.22, 0, 1.65);
       const pressureNorm = clamp(pressure / 1.35, 0, 1);
 
       const scoreColor = this.lerpHexColor("#DDFBFF", "#FFD39B", pressureNorm * 0.84);
@@ -293,15 +303,16 @@ export class UIScene extends Phaser.Scene {
       pressureGlow.setFillStyle(gaugeColorValue, 1);
       pressureGlow.setAlpha(0.15 + pressureNorm * 0.3);
       pressureGlow.setDisplaySize(8 + pressureNorm * 4, 10 + pressureNorm * 12);
+      pressureTrack.setAlpha(0.46 + pressureNorm * 0.22);
 
-      if (pressureNorm >= 0.88) {
+      if (fusion.state === "rush") {
         pressureLabel.setText("RUSH");
         pressureLabel.setColor("#FFD8AA");
-        pressureLabel.setScale(1.04 + pressureNorm * 0.06);
-      } else if (pressureNorm >= 0.65) {
+        pressureLabel.setScale(1.05 + pressureNorm * 0.07);
+      } else if (fusion.state === "heat") {
         pressureLabel.setText("HEAT");
         pressureLabel.setColor("#C9F8FF");
-        pressureLabel.setScale(1.01);
+        pressureLabel.setScale(1.01 + pressureNorm * 0.03);
       } else {
         pressureLabel.setText("FLOW");
         pressureLabel.setColor("#9AD9E7");
@@ -309,22 +320,36 @@ export class UIScene extends Phaser.Scene {
       }
       pressureLabel.setAlpha(0.7 + pressureNorm * 0.18);
 
-      const fireballActive = snapshot.power.fireballMsRemaining > 0;
-      if (fireballActive) {
+      if (fireballIntensity > 0) {
         powerText.setText(`FIREBALL ${(snapshot.power.fireballMsRemaining / 1000).toFixed(1)}s`);
         powerText.setColor("#FFBA8D");
         powerText.setAlpha(0.9);
+        powerBadge.setFillStyle(0x2a1a11, 1);
         powerBadge.setAlpha(0.34);
+      } else if (snapshot.power.missileMsRemaining > 0) {
+        powerText.setText(`MISSILE ${(snapshot.power.missileMsRemaining / 1000).toFixed(1)}s`);
+        powerText.setColor("#FFD6B0");
+        powerText.setAlpha(0.9);
+        powerBadge.setFillStyle(0x241b14, 1);
+        powerBadge.setAlpha(0.34);
+      } else if (snapshot.power.ghostMsRemaining > 0) {
+        powerText.setText(`GHOST ${(snapshot.power.ghostMsRemaining / 1000).toFixed(1)}s`);
+        powerText.setColor("#D3F7FF");
+        powerText.setAlpha(0.88);
+        powerBadge.setFillStyle(0x12212b, 1);
+        powerBadge.setAlpha(0.33);
       } else if (snapshot.power.shieldCharges > 0) {
         const shields = "|".repeat(snapshot.power.shieldCharges);
         powerText.setText(`SHIELD [${shields}]`);
         powerText.setColor("#C0F6FF");
         powerText.setAlpha(0.84);
+        powerBadge.setFillStyle(0x0b141f, 1);
         powerBadge.setAlpha(0.3);
       } else if (snapshot.power.magnetMsRemaining > 0) {
         powerText.setText(`MAGNET ${(snapshot.power.magnetMsRemaining / 1000).toFixed(1)}s`);
         powerText.setColor("#BDF8FF");
         powerText.setAlpha(0.78);
+        powerBadge.setFillStyle(0x0b141f, 1);
         powerBadge.setAlpha(0.28);
       } else {
         powerText.setAlpha(0);
@@ -336,50 +361,134 @@ export class UIScene extends Phaser.Scene {
       shieldPipB.setAlpha(shieldActive >= 2 ? 0.84 : 0);
 
       if (snapshot.status === "failed") {
-        failureVeil.setAlpha(0.22);
         failScoreText.setText(`${snapshot.score.current}`);
-        failScoreText.setAlpha(0.95);
-        runHintText.setText("tap to drop again");
-        runHintText.setAlpha(0.8);
+
+        if (lastStatus !== "failed") {
+          retryTransitionActive = false;
+          this.tweens.killTweensOf([failureVeil, failScoreText, runHintText, retryRipple]);
+
+          failureVeil.setAlpha(0);
+          failScoreText.setScale(0.86).setAlpha(0);
+          runHintText.setAlpha(0).setText("tap to drop again");
+          retryRipple.setAlpha(0).setScale(1);
+
+          this.tweens.add({
+            targets: failureVeil,
+            alpha: 0.24,
+            duration: 130,
+            ease: "Sine.Out",
+          });
+
+          this.tweens.add({
+            targets: failScoreText,
+            alpha: 0.96,
+            scaleX: 1,
+            scaleY: 1,
+            duration: 170,
+            ease: "Cubic.Out",
+          });
+
+          this.tweens.add({
+            targets: runHintText,
+            alpha: 0.82,
+            duration: 160,
+            delay: 42,
+            ease: "Sine.Out",
+          });
+        } else if (!retryTransitionActive) {
+          failureVeil.setAlpha(Math.max(0.2, failureVeil.alpha));
+          failScoreText.setAlpha(Math.max(0.92, failScoreText.alpha));
+          runHintText.setText("tap to drop again");
+          runHintText.setAlpha(Math.max(0.76, runHintText.alpha));
+        }
       } else {
+        if (lastStatus === "failed") {
+          retryTransitionActive = false;
+          this.tweens.killTweensOf([failureVeil, failScoreText, runHintText, retryRipple]);
+        }
+
         failureVeil.setAlpha(0);
-        failScoreText.setAlpha(0);
+        failScoreText.setAlpha(0).setScale(1);
         runHintText.setAlpha(0);
+        retryRipple.setAlpha(0).setScale(1);
       }
 
-      if (!debugText) {
-        lastScore = snapshot.score.current;
-        return;
+      if (debugText) {
+        const summary = services.runStatsRepository.getSummary();
+        debugText.setY(this.scale.height - 10);
+        debugText.setText(
+          [
+            "DBG",
+            `run ${Math.round(snapshot.elapsedMs)}ms`,
+            `state ${fusion.state} | spd ${Math.round(snapshot.difficulty.scrollSpeed)} | spw ${Math.round(snapshot.difficulty.spawnEveryMs)}ms`,
+            `combo ${snapshot.score.combo} x${snapshot.score.multiplier.toFixed(2)} | rank ${snapshot.score.rank}`,
+            `jump ${snapshot.player.jumpCount} | break ${snapshot.power.fireballBreakCount + snapshot.power.missileBreakCount}`,
+            `obs ${snapshot.obstacles.length} | bonus ${snapshot.bonuses.length}`,
+            `median ${(summary.medianRunMs / 1000).toFixed(1)}s | avg ${(summary.averageRunMs / 1000).toFixed(1)}s`,
+          ].join("\n"),
+        );
       }
-
-      const summary = services.runStatsRepository.getSummary();
-      debugText.setY(this.scale.height - 10);
-      debugText.setText(
-        [
-          "DBG",
-          `run ${Math.round(snapshot.elapsedMs)}ms`,
-          `spd ${Math.round(snapshot.difficulty.scrollSpeed)} | spw ${Math.round(snapshot.difficulty.spawnEveryMs)}ms`,
-          `combo ${snapshot.score.combo} x${snapshot.score.multiplier.toFixed(2)} | rank ${snapshot.score.rank}`,
-          `jump ${snapshot.player.jumpCount} | breaks ${snapshot.power.fireballBreakCount}`,
-          `obs ${snapshot.obstacles.length} | bonus ${snapshot.bonuses.length}`,
-          `median ${(summary.medianRunMs / 1000).toFixed(1)}s | avg ${(summary.averageRunMs / 1000).toFixed(1)}s`,
-        ].join("\n"),
-      );
 
       lastScore = snapshot.score.current;
+      lastStatus = snapshot.status;
     };
 
-    this.input.on(Phaser.Input.Events.POINTER_DOWN, () => {
+    const onRetryPointerDown = () => {
       const snapshot = services.store.getState();
-      if (snapshot.status !== "failed") {
+      if (snapshot.status !== "failed" || retryTransitionActive) {
         return;
       }
 
+      retryTransitionActive = true;
       this.retryAttempt += 1;
       services.audio.play("retry");
       services.runStatsRepository.markLastRunRetryImmediate(Date.now());
-      services.events.emit("run:retry", { attempt: this.retryAttempt });
-    });
+
+      runHintText.setText("relinking...");
+      runHintText.setAlpha(0.9);
+
+      this.tweens.killTweensOf([failureVeil, failScoreText, runHintText, retryRipple]);
+      retryRipple.setScale(0.84).setAlpha(0.32);
+
+      this.tweens.add({
+        targets: retryRipple,
+        scaleX: 1.45,
+        scaleY: 1.45,
+        alpha: 0,
+        duration: 130,
+        ease: "Sine.Out",
+      });
+
+      this.tweens.add({
+        targets: failureVeil,
+        alpha: 0.34,
+        duration: 64,
+        yoyo: true,
+        ease: "Sine.Out",
+      });
+
+      this.tweens.add({
+        targets: failScoreText,
+        scaleX: 1.06,
+        scaleY: 1.06,
+        alpha: 0,
+        duration: 120,
+        ease: "Cubic.In",
+      });
+
+      this.tweens.add({
+        targets: runHintText,
+        alpha: 0,
+        duration: 120,
+        ease: "Sine.In",
+      });
+
+      this.time.delayedCall(92, () => {
+        services.events.emit("run:retry", { attempt: this.retryAttempt });
+      });
+    };
+
+    this.input.on(Phaser.Input.Events.POINTER_DOWN, onRetryPointerDown);
 
     updateHud();
     this.unsubscribe = services.store.subscribe(() => {
@@ -387,32 +496,12 @@ export class UIScene extends Phaser.Scene {
     });
 
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
-      this.input.off(Phaser.Input.Events.POINTER_DOWN);
+      this.input.off(Phaser.Input.Events.POINTER_DOWN, onRetryPointerDown);
       if (this.unsubscribe) {
         this.unsubscribe();
       }
       this.unsubscribe = null;
     });
-  }
-
-  private rankToPressure(rank: RankTier): number {
-    if (rank === "SS") {
-      return 1;
-    }
-
-    if (rank === "S") {
-      return 0.8;
-    }
-
-    if (rank === "A") {
-      return 0.58;
-    }
-
-    if (rank === "B") {
-      return 0.35;
-    }
-
-    return 0.12;
   }
 
   private lerpHexColor(from: string, to: string, factor: number): string {
@@ -456,3 +545,6 @@ export class UIScene extends Phaser.Scene {
     return GAMEPLAY_TUNING.debugOverlayEnabled;
   }
 }
+
+
+
